@@ -61,7 +61,6 @@ def init_driver():
     options.add_argument('--disable-logging')
     options.add_argument('--log-level=3')
     options.add_argument(f"--remote-debugging-port={8500}")
-    options.binary_location = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
     options.page_load_strategy = 'eager'  # Don't wait for all resources
     
     try:
