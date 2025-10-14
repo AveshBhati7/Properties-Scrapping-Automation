@@ -16,6 +16,7 @@ import hashlib
 import requests
 import logging
 import pandas as pd
+from datetime import datetime
 import undetected_chromedriver as uc
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -51,7 +52,7 @@ def init_driver():
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-extensions')
     options.add_argument('--disable-plugins')
-    options.add_argument('--headless')
+    # options.add_argument('--headless')
     options.add_argument('--window-size=1920,1080')
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
@@ -60,6 +61,7 @@ def init_driver():
     options.add_argument('--disable-logging')
     options.add_argument('--log-level=3')
     options.add_argument(f"--remote-debugging-port={8500}")
+    options.binary_location = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
     options.page_load_strategy = 'eager'  # Don't wait for all resources
     
     try:
@@ -219,21 +221,22 @@ def scrape_property_images(driver, listing_id, base_image_folder, downloaded_has
         return "not found"
 
 # ---------- SCRAPE DATA ----------
-def scrape_immoscout24(driver, wait, base_url, base_image_folder):
+def scrape_immoscout24(driver, wait, base_url, base_image_folder, existing_df=None):
     all_properties = []
     page_no = 1
     property_type = "Rent" if "/rent/" in base_url else "Buy"
     downloaded_hashes = set()
-    seen_listings = set()  # Track already scraped listings
     MAX_RETRIES = 3
     RETRY_DELAY = 3
     attempt = 0
+    seen_ids = set()
+    
 
     # Changed: While Condition
     while page_no<=50:
-        url = re.sub(r"pn=\d+", f"pn={page_no}", base_url)
-        driver.get(url)
-        time.sleep(PAGE_LOAD_WAIT)  # Reduced from 3 seconds
+        page_url = re.sub(r"pn=\d+", f"pn={page_no}", base_url)
+        driver.get(page_url)
+        time.sleep(PAGE_LOAD_WAIT)
 
         # Changed: Accept cookies (If not already accepted)
         try:
@@ -256,42 +259,57 @@ def scrape_immoscout24(driver, wait, base_url, base_image_folder):
                 "Oh nein, da ist etwas schiefgelaufen!",
                 "Ops, c'è stato un errore!"
             ]):
-                print(f"✅ Reached last page at page {page_no}")
+                logger.info(f"✅ No properties found at page {page_no, page_url}")
                 break
         except:
             pass
-        
-        # Changed: Selector to get property links
+
+        # Changed: Selector to get property links, removed unused code
         try:
             # Get property cards (try scoped selectors, then broad fallbacks)
             listings_box = driver.find_element(By.CSS_SELECTOR, 'div[data-test="result-list-container"]')
             cards = listings_box.find_elements(By.CSS_SELECTOR, "[role='listitem'] a[href*='/rent/'], [role='listitem'] a[href*='/buy/']")
-
+            card_links = list(dict.fromkeys([c.get_attribute("href") for c in cards if c.get_attribute("href")]))
         except Exception as e:
-            print("⚠️ Could not load property cards", e)
+            logging.error(f"⚠️ Could not load property cards: {e}")
             # Retry delay before next attempt
             attempt += 1
             if attempt < MAX_RETRIES:
+                print("attempt retry")
                 time.sleep(RETRY_DELAY)
+                continue
             else:
-                logging.error(f"🚫 Failed after {MAX_RETRIES} attempts for {url}")
+                logging.error(f"🚫 Failed after {MAX_RETRIES} attempts for {page_url}")
                 break
-
-        card_links = list(dict.fromkeys([c.get_attribute("href") for c in cards if c.get_attribute("href")]))
-
-        # Filter out already seen listings
-        new_links = [link for link in card_links if link not in seen_listings]
-        if not new_links:
-            print(f"✅ No new properties on page {page_no}")
+        
+        if not card_links:
+            logger.info(f"⚠️ No properties found at page {page_no, page_url}")
             break
         
-        seen_listings.update(new_links)
-        print(f"\n📄 Page {page_no}: Found {len(new_links)} new properties ({property_type})")
+        # Filter out already scraped listings
+        if existing_df is not None and not existing_df.empty:
+            existing_df['Listing ID']=existing_df["Listing ID"].astype("str")
+            filtered_links = []
+            for link in card_links:
+                listing_id_candidate = link.rstrip('/').split('/')[-1]
+                if str(listing_id_candidate) not in existing_df["Listing ID"].values:
+                    filtered_links.append(link)
+                else:
+                    seen_ids.add(str(listing_id_candidate))
+        else:
+            filtered_links = card_links
 
-        for idx, property_url in enumerate(new_links, start=1):
+        if not filtered_links:
+            logger.info("All listings on this page are already scraped. Skipping page.")
+            page_no += 1
+            continue
+
+        total_links = len(filtered_links)
+
+        for idx, property_url in enumerate(filtered_links, start=1):
             try:
                 driver.get(property_url)
-                time.sleep(PROPERTY_LOAD_WAIT)  # Reduced from 3 seconds
+                time.sleep(PROPERTY_LOAD_WAIT)
 
                 listing_id = property_url.split("/")[-1]
                 
@@ -370,27 +388,65 @@ def scrape_immoscout24(driver, wait, base_url, base_image_folder):
                     "Type (Rent/Buy)": property_type,
                     "URL": property_url,
                     "Website": base_url,
-                    "Images": listing_id
+                    "Images": listing_id,
+                    "IsActive": True,
+                    "Last Seen Date": datetime.now()
                 }
 
                 all_properties.append(property_data)
-                print(f"✅ [{idx}/{len(new_links)}] {title[:40]}...")
+                print(f"✅ [{idx}/{total_links}] {title[:40]}...")
 
             except Exception as e:
                 logger.error(f"Error scraping property {idx}: {e}")
-                
         page_no += 1
+
+    # update existing_df once using the accumulated seen ids
+    if existing_df is not None and not existing_df.empty:
+        now = datetime.now()
+        # ensure comparison is string-based
+        existing_df["Listing ID"] = existing_df["Listing ID"].astype(str)
+
+        seen_list = list(seen_ids)
+
+        # Mark seen listings as active and update 'Last Seen Date'
+        mask_seen = existing_df["Listing ID"].isin(seen_list)
+        existing_df.loc[mask_seen, "Last Seen Date"] = now
+        existing_df.loc[mask_seen, "IsActive"] = True
+
+        # Mark unseen listings as inactive
+        existing_df.loc[~mask_seen, "IsActive"] = False
+    else:
+        # No pages succeeded: do not change IsActive flags (safer)
+        logger.info("No page was successfully processed — existing_df left unchanged for IsActive flags.")
 
     return all_properties
 
 # ---------- SAVE DATA ----------
-def save_data(data, save_dir, property_type):
+def save_data(data, save_dir, property_type, existing_df=None):
     os.makedirs(save_dir, exist_ok=True)
     file_name = os.path.join(save_dir, f"immoscout24_{property_type}.csv")
+
     data_df = pd.DataFrame(data)
-    data_df = data_df.drop_duplicates(subset=["Title"])
-    data_df.to_csv(file_name, index=False)
-    print(f"\n💾 {property_type} data saved to {file_name}")
+    data_df = data_df.drop_duplicates(subset=["Listing ID"])
+    
+    if os.path.exists(file_name) and existing_df is not None and not existing_df.empty:
+        # Save the updated existing_df + new data
+        combined_df = pd.concat([existing_df, data_df], ignore_index=True)
+        combined_df = combined_df.drop_duplicates(subset=["Listing ID"], keep='last')
+        combined_df.to_csv(file_name, index=False)
+        logging.info("Updated existing data")
+
+    elif os.path.exists(file_name):
+        # File exists but no existing_df provided - just append new data
+        data_df.to_csv(file_name, index=False, mode='a', header=False)
+        logging.info("Appending new data to existing file")
+
+    else:
+        # File doesn't exist - create new file
+        data_df.to_csv(file_name, index=False)
+        logging.info("Created new data file")
+    
+    logging.info(f"\n💾 {property_type} data saved to {file_name}\n\n")
 
 # ---------- MAIN ----------
 def main():
@@ -398,8 +454,8 @@ def main():
     print("🚀 Starting ImmoScout24 Scraper (OPTIMIZED VERSION)")
     print("="*60)
     print(f"⚡ Parallel image downloads: {MAX_IMAGE_WORKERS} workers")
-    print(f"⚡ Reduced wait times: {REDUCED_WAIT_TIME}s (was 15s)")
-    print(f"⚡ Page load wait: {PAGE_LOAD_WAIT}s (was 3s)")
+    print(f"⚡ Wait times: {REDUCED_WAIT_TIME}s")
+    print(f"⚡ Page load wait: {PAGE_LOAD_WAIT}s")
     print("="*60)
     
     driver, wait = init_driver()
@@ -422,13 +478,26 @@ def main():
     
     try:
         for url in urls:
+            logging.info(f"\n🔗 Processing URL: {url}")
             url_start_time = time.time()
-            print(f"\n🔗 Processing URL: {url}")
-            
-            data = scrape_immoscout24(driver, wait, url, base_image_folder)
-            logging.info("All Property Scraped")
+
             property_type = "Rent" if "/rent/" in url else "Buy"
-            save_data(data, save_dir, property_type)
+
+            try:
+                csv_path = os.path.join(save_dir, f"immoscout24_{property_type}.csv")
+                if os.path.exists(csv_path):
+                    existing_df = pd.read_csv(csv_path)
+                    logging.info(f"Loaded {len(existing_df)} previously scraped IDs for {property_type}")
+                else:
+                    existing_df = None
+                    logging.info(f"No existing data file for {property_type}. Performing full scrape.")
+            except Exception as e:
+                existing_df = None
+                logging.info(f"No existing Data for {property_type}. Performing Full scrape.")
+
+            data = scrape_immoscout24(driver, wait, url, base_image_folder, existing_df)
+            logging.info("Script Completed")
+            save_data(data, save_dir, property_type, existing_df)
             
             total_properties += len(data)
             url_time = time.time() - url_start_time
