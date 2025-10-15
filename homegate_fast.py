@@ -61,8 +61,6 @@ def init_driver():
     options.add_argument('--disable-logging')
     options.add_argument('--log-level=3')
     options.add_argument(f"--remote-debugging-port={8800}")
-
-    options.binary_location = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
     
     # Set Brave binary location for Linux
     # options.binary_location = "/usr/bin/brave-browser"
