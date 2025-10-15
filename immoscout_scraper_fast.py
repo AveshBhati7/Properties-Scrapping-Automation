@@ -52,8 +52,7 @@ def init_driver():
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-extensions')
     options.add_argument('--disable-plugins')
-    # options.add_argument('--headless')
-    options.add_argument('--window-size=1920,1080')
+    options.add_argument('--headless')
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     # Performance optimizations
@@ -69,6 +68,7 @@ def init_driver():
         from selenium import webdriver
         driver = webdriver.Chrome(options=options)
     
+    driver.maximize_window()
     # Reduced wait time
     wait = WebDriverWait(driver, REDUCED_WAIT_TIME)
     return driver, wait
